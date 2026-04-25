@@ -6,31 +6,29 @@ from datetime import datetime
 from google import genai
 from playwright.async_api import async_playwright
 
-# Configuración necesaria para Google Colab
+# Configuración para Google Colab
 nest_asyncio.apply()
 
 # =================================================================
-# CONFIGURACIÓN DE ACCESO - LUIS ANDRÉ LUNA PALACIOS (UCE)
+# CONFIGURACIÓN TÉCNICA - LUIS ANDRÉ LUNA PALACIOS (UCE)
 # =================================================================
-SESSION_ID = "77976809109%3AMKOgNNGulfVAhM%3A14%3AAYguRmk-6kPNlkePRpy7ymjKLnSTewj8YZFlQj_y3A"
-TARGET_USER = "nekakilll"
-GEMINI_API_KEY = "AIzaSyDB8AlxMbXKsoV3t9iSgATDjypcB7ku6QU"  
+SESSION_ID = "77976809109%3ApoOGMGprBfQLTc%3A12%3AAYhm99t4S7aJj4R1lU_Q8piQWLmgmNi_NspiuYrGIA"
+TARGET_USER = "nekakilll" 
+GEMINI_API_KEY = "AIzaSyBddQgwmkU2EDlPHSj96q_KNVeVM3iwYUA" 
 
-# Inicializar cliente de Google GenAI
+# Inicializar cliente de la nueva SDK google-genai
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODELO_ID = "gemini-1.5-flash"
 # =================================================================
 
 async def scrapper_instagram():
-    """Fase 1: Extracción de 10 publicaciones x 15 comentarios"""
+    """Fase 1: Extracción forzada de 10 publicaciones x 15 comentarios cada una"""
     print(f"[*] Iniciando extracción profunda de @{TARGET_USER}...")
     dataset = {"usuario": TARGET_USER, "posts": []}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
+        context = await browser.new_context(viewport={'width': 1280, 'height': 1080})
         
-        # Inyectar sesión
         await context.add_cookies([{
             "name": "sessionid", 
             "value": SESSION_ID, 
@@ -41,108 +39,130 @@ async def scrapper_instagram():
         page = await context.new_page()
 
         try:
-            # Ir al perfil
+            # 1. CARGA DEL PERFIL CON SCROLL DINÁMICO
             await page.goto(f"https://www.instagram.com/{TARGET_USER}/", timeout=60000)
             await page.wait_for_timeout(5000)
             
-            # Recolectar URLs de 10 posts
-            urls = await page.locator('a[href*="/p/"]').evaluate_all('elements => elements.map(e => e.href)')
-            urls = urls[:10]
+            print("[*] Localizando 10 publicaciones en la cuadrícula...")
+            enlaces_encontrados = []
+            for _ in range(6): 
+                hrefs = await page.locator('a[href*="/p/"]').evaluate_all('elements => elements.map(e => e.href)')
+                for h in hrefs:
+                    if h not in enlaces_encontrados:
+                        enlaces_encontrados.append(h)
+                if len(enlaces_encontrados) >= 10: break
+                await page.mouse.wheel(0, 1200)
+                await page.wait_for_timeout(2000)
 
+            urls = enlaces_encontrados[:10]
+            print(f"[!] Total de posts a procesar: {len(urls)}")
+
+            # 2. EXTRACCIÓN DETALLADA POR CADA POST
             for idx, url in enumerate(urls):
-                print(f"    [+] Procesando Post {idx+1}/10... (Extrayendo comentarios)")
+                print(f"    [+] Entrando a Publicación {idx+1}/10...")
                 await page.goto(url, timeout=60000)
                 
-                # Scroll para cargar comentarios ocultos
-                await page.mouse.wheel(0, 1500)
-                await page.wait_for_timeout(5000)
+                # Scroll interno para activar carga de comentarios
+                for _ in range(3):
+                    await page.mouse.wheel(0, 900)
+                    await page.wait_for_timeout(2000)
 
-                # Captura de texto del post
                 try:
-                    bloque_texto = await page.locator('article').inner_text(timeout=5000)
+                    # Capturamos el cuerpo principal para procesar el texto
+                    texto_raw = await page.locator('body').inner_text(timeout=8000)
                 except:
-                    bloque_texto = await page.locator('main').inner_text()
+                    texto_raw = ""
 
-                lineas = [l.strip() for l in bloque_texto.split('\n') if len(l.strip()) > 1]
+                lineas = [l.strip() for l in texto_raw.split('\n') if len(l.strip()) > 1]
                 
-                # Filtrado de ruido de interfaz
-                stop_words = ["Me gusta", "Responder", "Ver traducción", "Compartir", "Guardar", "Seguir", "Follow", "Reply"]
-                comentarios_limpios = [
+                # Lista de ruido para limpiar el dataset
+                ruido = ["Me gusta", "Responder", "Ver traducción", "Compartir", "Guardar", "Seguir", "Follow", "Reply", "Likes"]
+                
+                comentarios = [
                     l for l in lineas 
-                    if l != TARGET_USER and not any(word in l for word in stop_words) and not re.match(r'^\d+[smhdw]$', l)
+                    if l != TARGET_USER and not any(word in l for word in ruido) and not re.match(r'^\d+[smhdw]$', l)
                 ]
                 
-                # Eliminamos el primer elemento (suele ser la descripción del autor)
-                if comentarios_limpios: comentarios_limpios.pop(0)
+                # Remover descripción del post (autor)
+                if comentarios: comentarios.pop(0)
                 
                 dataset["posts"].append({
-                    "id": idx + 1,
-                    "enlace": url,
-                    "comentarios": comentarios_limpios[:15]
+                    "id_post": idx + 1,
+                    "url": url,
+                    "comentarios": comentarios[:15]
                 })
+                print(f"        ✓ {len(comentarios[:15])} comentarios registrados.")
 
         except Exception as e:
-            print(f"[!] Error durante el scraping: {e}")
+            print(f"[!] Error en Scraping: {e}")
         finally:
             await browser.close()
             
     return dataset
 
 async def analizar_con_api_flash(datos_json):
-    """Fase 2: Conexión con Gemini 1.5 Flash para análisis semántico"""
-    print(f"\n[☁️] Conectando con {MODELO_ID} para procesamiento de datos...")
+    """Fase 2: Procesamiento con Gemini 1.5 Flash (Solución al Error 404)"""
+    print(f"\n[☁️] Conectando con la infraestructura de Gemini para análisis semántico...")
     
     prompt = f"""
-    Eres un experto en análisis de datos y ciberpsicología. 
-    Analiza el siguiente dataset en JSON extraído de Instagram:
+    Actúa como un experto en análisis de datos y ciberpsicología. 
+    Analiza este dataset estructurado en JSON de Instagram:
     
     {json.dumps(datos_json, indent=2)}
     
-    Genera un informe académico y profesional en TERCERA PERSONA que cubra:
-    1. Resumen de la actividad digital y narrativa visual detectada.
-    2. Análisis conductual basado en el tono de los comentarios de los seguidores.
-    3. Evaluación de la autenticidad de la red social (¿interacciones reales o bots?).
-    4. Conclusión sobre los intereses y reputación del perfil analizado.
+    Genera un informe académico profesional en TERCERA PERSONA que cubra:
+    1. Resumen de actividad y narrativa del perfil.
+    2. Perfil conductual basado en las interacciones.
+    3. Evaluación de la autenticidad de la comunidad.
+    4. Conclusión de reputación digital.
     """
     
-    # Llamada oficial a la librería google-genai
-    response = client.models.generate_content(
-        model=MODELO_ID,
-        contents=prompt
-    )
+    # Probamos las variaciones de nombre de modelo para evitar el error 404
+    modelos_a_probar = ["gemini-1.5-flash", "models/gemini-1.5-flash"]
     
-    return response.text
+    for modelo in modelos_a_probar:
+        try:
+            response = client.models.generate_content(
+                model=modelo,
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            if "not found" in str(e).lower() or "404" in str(e):
+                continue # Prueba el siguiente nombre en la lista
+            raise e
+    raise Exception("No se pudo conectar con el modelo Gemini 1.5 Flash en ninguna de sus rutas.")
 
 async def ejecutar_sistema_completo():
-    """Coordinador del flujo"""
-    tiempo_inicio = datetime.now()
+    """Coordinador de flujo final"""
+    inicio = datetime.now()
     
-    # 1. Scraping
-    data_final = await scrapper_instagram()
+    # 1. Fase de Obtención de Datos
+    raw_data = await scrapper_instagram()
     
-    if not data_final["posts"]:
-        print("[!] No se pudieron recolectar datos. Revisa el SESSION_ID.")
+    if not raw_data["posts"]:
+        print("[!] No se recolectó información. Verifica tu SESSION_ID.")
         return
 
-    # 2. IA Análisis
+    # 2. Fase de Inteligencia Artificial
     try:
-        informe_final = await analizar_con_api_flash(data_final)
+        informe_final = await analizar_con_api_flash(raw_data)
         
-        # 3. Guardar JSON y mostrar reporte
-        nombre_json = f"analisis_{TARGET_USER}.json"
-        with open(nombre_json, "w", encoding="utf-8") as f:
-            json.dump(data_final, f, indent=4, ensure_ascii=False)
+        # 3. Almacenamiento y Salida
+        archivo_salida = f"auditoria_final_{TARGET_USER}.json"
+        with open(archivo_salida, "w", encoding="utf-8") as f:
+            json.dump(raw_data, f, indent=4, ensure_ascii=False)
             
-        print("\n" + "="*70)
-        print(f"AUDITORÍA ESTRATÉGICA - MODELO {MODELO_ID.upper()}")
-        print("="*70)
+        print("\n" + "█" * 70)
+        print(f" REPORTE TÉCNICO GENERADO CON ÉXITO ")
+        print("█" * 70)
         print(informe_final)
-        print("="*70)
-        print(f"Archivo generado: {nombre_json}")
-        print(f"Duración: {datetime.now() - tiempo_inicio}")
+        print("█" * 70)
+        print(f"\nProceso finalizado en: {datetime.now() - inicio}")
+        print(f"Dataset JSON disponible en: {archivo_salida}")
 
     except Exception as e:
-        print(f"\n[!] Error en la fase de IA: {e}")
+        print(f"\n[!] Error fatal en la capa de IA: {e}")
 
-# LANZAMIENTO EN COLAB
+# LANZAMIENTO
 await ejecutar_sistema_completo()
